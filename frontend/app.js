@@ -578,7 +578,12 @@ $('attachButton').addEventListener('click', () => {
 });
 $('attachmentChooser').addEventListener('click', e => { if (e.target.closest('[data-close-attachment-chooser]')) closeAttachmentChooser(); });
 $('chooseFileButton').addEventListener('click', () => { closeAttachmentChooser(); $('fileInput').click(); });
-$('chooseMediaButton').addEventListener('click', () => { if (window.matchMedia('(max-width: 720px)').matches) openMobileMediaSheet(); else $('mediaInput').click(); });
+$('chooseMediaButton').addEventListener('click', () => {
+  closeAttachmentChooser();
+  // Android WebView перехватывает этот input и показывает встроенную нативную галерею.
+  // В обычном браузере откроется системный выбор файлов.
+  $('mediaInput').click();
+});
 $('mobileMediaClose').addEventListener('click', closeMobileMediaSheet);
 $('mobileMediaSheet').addEventListener('click', e => { if (e.target.closest('[data-close-media-sheet]')) closeMobileMediaSheet(); });
 $('openDeviceGalleryButton').addEventListener('click', () => { $('mediaInput').click(); });
@@ -592,22 +597,47 @@ mediaHandle.addEventListener('click', () => { const sheet = $('mobileMediaSheet'
 mediaHandle.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $('mobileMediaSheet').classList.toggle('expanded'); } });
 document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeAttachmentChooser(); closeMobileMediaSheet(); } });
 async function uploadChosenAttachment(input) {
-  const file = input.files && input.files[0];
-  if (!file) return;
-  if (file.size > 50 * 1024 * 1024) { toastError('Максимальный размер файла сейчас 50 МБ.'); input.value = ''; return; }
-  $('attachButton').disabled = true; $('typingIndicator').textContent = `Загрузка файла: ${file.name}`;
+  const files = Array.from(input.files || []);
+  if (!files.length) return;
+  const oversized = files.find(file => file.size > 50 * 1024 * 1024);
+  if (oversized) {
+    toastError(`Файл «${oversized.name}» больше 50 МБ. Выбери файлы меньшего размера.`);
+    input.value = '';
+    return;
+  }
+
+  $('attachButton').disabled = true;
+  let sent = 0;
   try {
-    const form = new FormData(); form.append('file', file);
-    const response = await fetch('/api/upload', { method: 'POST', headers: { Authorization: `Bearer ${state.token}` }, body: form });
-    let data = {}; try { data = await response.json(); } catch {}
-    if (!response.ok) throw new Error(data.error || `Ошибка загрузки ${response.status}`);
-    const payload = state.selected ? { type: 'private', toId: state.selected, text: `Файл: ${file.name}`, attachment: data.attachment } : { type: 'group', text: `Файл: ${file.name}`, attachment: data.attachment };
-    const result = await api('/api/messages', { method: 'POST', body: JSON.stringify(payload) });
-    if (result.message) await addMessage(result.message);
+    for (const file of files) {
+      $('typingIndicator').textContent = `Загрузка ${sent + 1}/${files.length}: ${file.name}`;
+      const form = new FormData();
+      form.append('file', file);
+      const response = await fetch('/api/upload', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${state.token}` },
+        body: form
+      });
+      let data = {};
+      try { data = await response.json(); } catch {}
+      if (!response.ok) throw new Error(data.error || `Ошибка загрузки ${response.status}: ${file.name}`);
+
+      const payload = state.selected
+        ? { type: 'private', toId: state.selected, text: `Файл: ${file.name}`, attachment: data.attachment }
+        : { type: 'group', text: `Файл: ${file.name}`, attachment: data.attachment };
+      const result = await api('/api/messages', { method: 'POST', body: JSON.stringify(payload) });
+      if (result.message) await addMessage(result.message);
+      sent++;
+    }
     await loadUsers();
-    toastError('Вложение отправлено.');
-  } catch (err) { toastError(err.message); }
-  finally { $('attachButton').disabled = false; input.value = ''; $('typingIndicator').textContent = ''; }
+    toastError(sent === 1 ? 'Вложение отправлено.' : `Отправлено файлов: ${sent}.`);
+  } catch (err) {
+    toastError(`${err.message || 'Не удалось отправить файл.'} Успешно отправлено: ${sent} из ${files.length}.`);
+  } finally {
+    $('attachButton').disabled = false;
+    input.value = '';
+    $('typingIndicator').textContent = '';
+  }
 }
 $('fileInput').addEventListener('change', () => uploadChosenAttachment($('fileInput')));
 $('mediaInput').addEventListener('change', () => { if ($('mediaInput').files?.length) closeMobileMediaSheet(); uploadChosenAttachment($('mediaInput')); });
